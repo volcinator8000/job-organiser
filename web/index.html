@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self';
+                 connect-src 'self' https://api.github.com; img-src 'self' data:;
+                 form-action 'none'; base-uri 'none'">
+  <title>Job Organiser</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="config.js"></script>
+  <script src="vendor/sql-wasm.js"></script>
+  <script type="module" src="app.js"></script>
+</head>
+<body>
+
+<!-- ============ Login ============ -->
+<main id="login" class="login">
+  <form id="login-form" class="card login-card" autocomplete="off">
+    <h1>Job Organiser</h1>
+    <p id="login-hint" class="muted">Loading…</p>
+
+    <!-- lets password managers store the vault password under a stable name -->
+    <input class="sr-only" type="text" name="username" autocomplete="username" value="job-organiser vault"
+           readonly tabindex="-1" aria-hidden="true">
+    <label>Password
+      <input id="pw" type="password" autocomplete="current-password" required minlength="10">
+    </label>
+    <label id="pw2-row" hidden>Repeat password
+      <input id="pw2" type="password" autocomplete="new-password" minlength="10">
+    </label>
+
+    <details id="login-adv">
+      <summary>Other options</summary>
+      <label>GitHub token <span class="muted">(private repo or first login on a new device)</span>
+        <input id="login-token" type="password" autocomplete="off" placeholder="github_pat_…">
+      </label>
+      <label>Open a backup file
+        <input id="login-file" type="file" accept=".vault,application/octet-stream">
+      </label>
+    </details>
+
+    <button id="login-btn" class="primary" type="submit" disabled>Unlock</button>
+    <p id="login-error" class="error" role="alert"></p>
+    <p class="muted small">Your data is encrypted in this browser (AES-256-GCM) before it is stored or
+      uploaded. Nobody can read it without the password — and it cannot be recovered if you forget it.</p>
+  </form>
+</main>
+
+<!-- ============ App ============ -->
+<div id="app" hidden>
+  <header class="topbar">
+    <strong class="brand">Job Organiser</strong>
+    <nav class="tabs" role="tablist">
+      <button role="tab" data-tab="apps" aria-selected="true">Applications</button>
+      <button role="tab" data-tab="due">Follow-ups <span id="due-badge" class="badge" hidden></span></button>
+      <button role="tab" data-tab="sql">SQL</button>
+      <button role="tab" data-tab="settings">Settings</button>
+    </nav>
+    <span id="sync-state" class="sync" title="Sync status"></span>
+    <button id="lock-btn" class="ghost">Lock</button>
+  </header>
+
+  <section id="tab-apps" class="tab">
+    <div class="toolbar">
+      <input id="search" type="search" placeholder="Search company, position, notes…">
+      <select id="status-filter"><option value="">All statuses</option></select>
+      <button id="add-btn" class="primary">+ Add application</button>
+    </div>
+    <div id="stats" class="stats"></div>
+    <div class="table-wrap">
+      <table id="apps-table">
+        <thead><tr>
+          <th>Company</th><th>Position</th><th>Status</th><th>Applied</th><th>Next follow-up</th><th></th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <p id="apps-empty" class="empty" hidden>No applications yet. Add the first one!</p>
+  </section>
+
+  <section id="tab-due" class="tab" hidden>
+    <p class="muted">Applications where it's time to send a follow-up message. Drafting opens your mail app with
+      a message from your template; mark it sent afterwards to reset the timer.</p>
+    <div id="due-list" class="due-list"></div>
+    <p id="due-empty" class="empty" hidden>Nothing to follow up on today. 🎉</p>
+  </section>
+
+  <section id="tab-sql" class="tab" hidden>
+    <p class="muted">Run SQL directly on your decrypted database. Tables: <code>applications</code>,
+      <code>events</code>, <code>settings</code>; views: <code>v_applications</code>, <code>v_due_followups</code>.
+      Changes are encrypted and saved automatically.</p>
+    <textarea id="sql-input" spellcheck="false" rows="6">SELECT status, COUNT(*) AS n FROM applications GROUP BY status;</textarea>
+    <div class="toolbar"><button id="sql-run" class="primary">Run (Ctrl+Enter)</button></div>
+    <p id="sql-error" class="error" role="alert"></p>
+    <div id="sql-out"></div>
+  </section>
+
+  <section id="tab-settings" class="tab" hidden>
+    <form id="settings-form" class="card settings">
+      <h2>Reminders</h2>
+      <label>Default follow-up after (days)
+        <input name="default_follow_up_days" type="number" min="0" max="90" value="7"></label>
+      <label>Your name (signs follow-up messages)
+        <input name="my_name" type="text"></label>
+      <label>Follow-up message template
+        <textarea name="follow_up_template" rows="8"></textarea></label>
+      <p class="muted small">Placeholders: {company} {position} {contact} {applied_on} {me}</p>
+      <button type="button" id="notif-btn">Enable browser notifications</button>
+
+      <h2>Sync to GitHub</h2>
+      <p class="muted small">The encrypted vault is committed to <code id="repo-path"></code>. GitHub Actions then
+        decrypts it to update Google Sheets and email reminders. Use a fine-grained token with
+        <em>Contents: read &amp; write</em> on this repository only. It is stored inside the encrypted vault.</p>
+      <label>GitHub token
+        <input name="github_token" type="password" autocomplete="off" placeholder="github_pat_…"></label>
+
+      <h2>Security</h2>
+      <label>Auto-lock after inactivity (minutes)
+        <input name="auto_lock_minutes" type="number" min="1" max="240" value="10"></label>
+
+      <div class="toolbar"><button class="primary" type="submit">Save settings</button>
+        <span id="settings-ok" class="muted"></span></div>
+    </form>
+
+    <form id="passwd-form" class="card settings">
+      <h2>Change password</h2>
+      <label>New password <input id="np1" type="password" minlength="10" required autocomplete="new-password"></label>
+      <label>Repeat <input id="np2" type="password" minlength="10" required autocomplete="new-password"></label>
+      <p class="muted small">Remember to update the <code>JOBVAULT_PASSWORD</code> secret in GitHub too.</p>
+      <button class="primary" type="submit">Change password</button>
+      <p id="passwd-msg" class="muted"></p>
+    </form>
+
+    <div class="card settings">
+      <h2>Backup</h2>
+      <div class="toolbar">
+        <button id="dl-vault">Download encrypted backup</button>
+        <button id="dl-sqlite" class="danger-outline">Download decrypted .sqlite</button>
+        <button id="force-push">Push this copy to GitHub (overwrite)</button>
+        <button id="discard-local">Discard this browser's copy</button>
+      </div>
+    </div>
+  </section>
+</div>
+
+<!-- ============ Application dialog ============ -->
+<dialog id="app-dialog">
+  <form id="app-form" method="dialog" class="dialog-form">
+    <h2 id="app-dialog-title">Add application</h2>
+    <input type="hidden" name="id">
+    <div class="grid2">
+      <label>Company * <input name="company" required></label>
+      <label>Position * <input name="position" required></label>
+      <label>Status <select name="status"></select></label>
+      <label>Location <input name="location"></label>
+      <label>Applied on <input name="applied_on" type="date"></label>
+      <label>Last contact <input name="last_contact_on" type="date"></label>
+      <label>Follow up every (days, 0 = never) <input name="follow_up_days" type="number" min="0" max="365"></label>
+      <label>Job posting URL <input name="url" type="url" placeholder="https://"></label>
+      <label>Contact name <input name="contact_name"></label>
+      <label>Contact email <input name="contact_email" type="email"></label>
+    </div>
+    <label>Notes <textarea name="notes" rows="3"></textarea></label>
+    <div id="app-events" class="events"></div>
+    <div class="toolbar end">
+      <button type="button" id="app-delete" class="danger-outline" hidden>Delete</button>
+      <span class="spacer"></span>
+      <button type="button" id="app-cancel">Cancel</button>
+      <button type="submit" class="primary">Save</button>
+    </div>
+  </form>
+</dialog>
+
+<div id="toast" class="toast" role="status" hidden></div>
+</body>
+</html>

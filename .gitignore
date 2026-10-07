@@ -1,0 +1,9 @@
+c/jobctl
+c/schema.h
+_site/
+__pycache__/
+.venv/
+*.tmp
+*.sqlite
+*.db
+service-account*.json
