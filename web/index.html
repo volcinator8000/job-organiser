@@ -9,6 +9,7 @@
                  connect-src 'self' https://api.github.com; img-src 'self' data:;
                  form-action 'none'; base-uri 'none'">
   <title>Job Organiser</title>
+  <link rel="icon" href="data:,">
   <link rel="stylesheet" href="style.css">
   <script src="config.js"></script>
   <script src="vendor/sql-wasm.js"></script>
@@ -67,6 +68,7 @@
     <div class="toolbar">
       <input id="search" type="search" placeholder="Search company, position, notes…">
       <select id="status-filter"><option value="">All statuses</option></select>
+      <button id="import-btn">Import…</button>
       <button id="add-btn" class="primary">+ Add application</button>
     </div>
     <div id="stats" class="stats"></div>
@@ -78,7 +80,8 @@
         <tbody></tbody>
       </table>
     </div>
-    <p id="apps-empty" class="empty" hidden>No applications yet. Add the first one!</p>
+    <p id="apps-empty" class="empty" hidden>No applications yet. Add the first one, or import a spreadsheet
+      (CSV, Excel, OpenDocument).</p>
   </section>
 
   <section id="tab-due" class="tab" hidden>
@@ -112,7 +115,7 @@
 
       <h2>Sync to GitHub</h2>
       <p class="muted small">The encrypted vault is committed to <code id="repo-path"></code>. GitHub Actions then
-        decrypts it to update Google Sheets and email reminders. Use a fine-grained token with
+        decrypts it once a day to email your reminders. Use a fine-grained token with
         <em>Contents: read &amp; write</em> on this repository only. It is stored inside the encrypted vault.</p>
       <label>GitHub token
         <input name="github_token" type="password" autocomplete="off" placeholder="github_pat_…"></label>
@@ -133,6 +136,16 @@
       <button class="primary" type="submit">Change password</button>
       <p id="passwd-msg" class="muted"></p>
     </form>
+
+    <div class="card settings">
+      <h2>Export</h2>
+      <p class="muted small">Spreadsheet exports are <strong>not encrypted</strong>.</p>
+      <div class="toolbar">
+        <button data-export="xlsx">Excel (.xlsx)</button>
+        <button data-export="ods">OpenDocument (.ods)</button>
+        <button data-export="csv">CSV</button>
+      </div>
+    </div>
 
     <div class="card settings">
       <h2>Backup</h2>
@@ -170,6 +183,44 @@
       <span class="spacer"></span>
       <button type="button" id="app-cancel">Cancel</button>
       <button type="submit" class="primary">Save</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- ============ Import dialog ============ -->
+<dialog id="import-dialog">
+  <form id="import-form" method="dialog" class="dialog-form">
+    <h2>Import applications</h2>
+    <label>Spreadsheet file
+      <input id="import-file" type="file"
+             accept=".csv,.tsv,.txt,.xlsx,.xlsm,.xlsb,.xls,.ods,.fods,.numbers"></label>
+    <p class="muted small">CSV, TSV, Excel (.xlsx, .xls), OpenDocument (.ods) or Numbers. The first row should
+      hold the column names. The file is read in this browser and never uploaded.</p>
+
+    <div id="import-map" hidden>
+      <label id="import-sheet-row">Sheet <select id="import-sheet"></select></label>
+      <h3>Columns</h3>
+      <div id="import-fields" class="grid2"></div>
+      <div class="grid2">
+        <label>Dates like 03/04/2026 mean
+          <select id="import-datefmt">
+            <option value="dmy">3 April (day first)</option>
+            <option value="mdy">March 4 (month first)</option>
+          </select></label>
+      </div>
+      <label class="check"><input type="checkbox" id="import-skipdup" checked>
+        Skip rows already in the tracker (same company and position)</label>
+      <label class="check"><input type="checkbox" id="import-extra" checked>
+        Copy unmatched columns into notes</label>
+      <h3>Preview</h3>
+      <div id="import-preview" class="table-wrap"></div>
+      <p id="import-summary" class="muted small"></p>
+    </div>
+    <p id="import-error" class="error" role="alert"></p>
+    <div class="toolbar end">
+      <span class="spacer"></span>
+      <button type="button" id="import-cancel">Cancel</button>
+      <button type="submit" id="import-go" class="primary" disabled>Import</button>
     </div>
   </form>
 </dialog>

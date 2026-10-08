@@ -1,2 +1,1 @@
 cryptography>=42
-gspread>=6.0

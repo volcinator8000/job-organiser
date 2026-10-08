@@ -1,4 +1,5 @@
 import * as Vault from './vault.js';
+import * as Sheet from './importer.js';
 
 const STATUSES = ['wishlist', 'applied', 'followed_up', 'interviewing', 'offer', 'accepted',
                   'rejected', 'ghosted', 'withdrawn'];
@@ -329,6 +330,13 @@ function enterApp() {
     const s = e.target.closest('[data-filter]');
     if (s) { $('#status-filter').value = s.dataset.filter; renderApps(); }
   });
+  $('#import-btn').addEventListener('click', openImport);
+  $('#import-cancel').addEventListener('click', () => $('#import-dialog').close());
+  $('#import-file').addEventListener('change', onImportFile);
+  $('#import-sheet').addEventListener('change', () => selectSheet($('#import-sheet').value));
+  $('#import-map').addEventListener('change', e => { if (e.target.id !== 'import-sheet') updateImportPreview(); });
+  $('#import-form').addEventListener('submit', runImport);
+  $$('[data-export]').forEach(b => b.addEventListener('click', () => exportSpreadsheet(b.dataset.export)));
   $('#sql-run').addEventListener('click', runSql);
   $('#sql-input').addEventListener('keydown', e => {
     if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); runSql(); }
@@ -539,6 +547,144 @@ async function onDueClick(e) {
     case 'ghosted':
       await mutate(() => run("UPDATE applications SET status = 'ghosted' WHERE id = ?", [id]));
       break;
+  }
+}
+
+// ---------------------------------------------------------------- import / export
+
+let imp = null;   // { XLSX, sheets, rows, result } while the import dialog is open
+
+function openImport() {
+  imp = null;
+  $('#import-form').reset();
+  $('#import-map').hidden = true;
+  $('#import-error').textContent = '';
+  $('#import-go').disabled = true;
+  $('#import-go').textContent = 'Import';
+  $('#import-dialog').showModal();
+  Sheet.loadXLSX().catch(e => { $('#import-error').textContent = e.message; });   // warm up
+}
+
+async function onImportFile(e) {
+  const file = e.target.files[0];
+  $('#import-error').textContent = '';
+  $('#import-map').hidden = true;
+  $('#import-go').disabled = true;
+  if (!file) return;
+  try {
+    imp = { XLSX: await Sheet.loadXLSX(), sheets: await Sheet.parseFile(file) };
+  } catch (ex) {
+    imp = null;
+    $('#import-error').textContent = `Could not read “${file.name}”: ${ex.message}`;
+    return;
+  }
+  const names = Object.keys(imp.sheets);
+  $('#import-sheet').innerHTML = names.map(n => `<option>${esc(n)}</option>`).join('');
+  $('#import-sheet-row').hidden = names.length < 2;
+  selectSheet(names[0]);
+  $('#import-map').hidden = false;
+}
+
+function selectSheet(name) {
+  imp.rows = imp.sheets[name];
+  const headers = imp.rows[0].map((h, i) => String(h).trim() || `Column ${i + 1}`);
+  const guess = Sheet.guessMapping(headers);
+  const options = `<option value="-1">— not in file —</option>` +
+    headers.map((h, i) => `<option value="${i}">${esc(h)}</option>`).join('');
+  $('#import-fields').innerHTML = Sheet.FIELDS.map(f => `
+    <label>${esc(f.label)}
+      <select data-field="${f.key}">${options.replace(`value="${guess[f.key]}"`, `value="${guess[f.key]}" selected`)}</select>
+    </label>`).join('');
+  const dateCols = ['applied_on', 'last_contact_on'].map(k => guess[k]).filter(i => i >= 0);
+  $('#import-datefmt').value = Sheet.guessDateOrder(imp.rows.slice(1).flatMap(r => dateCols.map(i => r[i])));
+  updateImportPreview();
+}
+
+function updateImportPreview() {
+  if (!imp?.rows) return;
+  const mapping = Object.fromEntries($$('#import-fields select').map(s => [s.dataset.field, Number(s.value)]));
+  const go = $('#import-go');
+  if (mapping.company < 0) {
+    imp.result = null;
+    $('#import-preview').innerHTML = '';
+    $('#import-summary').textContent = 'Choose which column holds the company name.';
+    go.disabled = true;
+    return;
+  }
+  const existing = new Set(q('SELECT lower(company) AS c, lower(position) AS p FROM applications')
+    .map(r => `${r.c}\u0000${r.p}`));
+  const res = imp.result = Sheet.buildRecords(imp.rows, mapping, {
+    order: $('#import-datefmt').value,
+    defaultFollowUp: Number(setting('default_follow_up_days', '7')) || 0,
+    existing,
+    skipDuplicates: $('#import-skipdup').checked,
+    extraToNotes: $('#import-extra').checked,
+  }, imp.XLSX);
+
+  const cols = ['company', 'position', 'status', 'applied_on', 'last_contact_on', 'location', 'contact_email', 'notes'];
+  $('#import-preview').innerHTML = res.records.length ? `<table>
+    <thead><tr>${cols.map(c => `<th>${esc(c.replace(/_/g, ' '))}</th>`).join('')}</tr></thead>
+    <tbody>${res.records.slice(0, 8).map(r => `<tr>${cols.map(c =>
+      `<td>${esc(c === 'status' ? label(r[c]) : (r[c] ?? '').toString().slice(0, 60))}</td>`).join('')}</tr>`).join('')}</tbody>
+  </table>` : '';
+  const notes = [
+    `${res.records.length} application${res.records.length === 1 ? '' : 's'} ready to import` +
+      (res.records.length > 8 ? ' (first 8 shown)' : '') + '.',
+    res.duplicates && `${res.duplicates} already in the tracker, skipped.`,
+    res.skipped && `${res.skipped} row${res.skipped === 1 ? '' : 's'} without a company, skipped.`,
+    res.unknownStatus && `${res.unknownStatus} unrecognised status${res.unknownStatus === 1 ? '' : 'es'} set to “applied” (original kept in notes).`,
+    res.badDates && `${res.badDates} date${res.badDates === 1 ? '' : 's'} not understood (kept in notes).`,
+  ].filter(Boolean);
+  $('#import-summary').textContent = notes.join(' ');
+  go.disabled = res.records.length === 0;
+  go.textContent = `Import ${res.records.length}`;
+}
+
+async function runImport(e) {
+  e.preventDefault();
+  const records = imp?.result?.records;
+  if (!records?.length) return;
+  try {
+    await mutate(() => {
+      db.exec('BEGIN');
+      try {
+        const st = db.prepare(`INSERT INTO applications(company, position, status, applied_on, last_contact_on,
+            location, url, contact_name, contact_email, follow_up_days, notes) VALUES (?,?,?,?,?,?,?,?,?,?,?)`);
+        for (const r of records)
+          st.run([r.company, r.position, r.status, r.applied_on, r.last_contact_on, r.location, r.url,
+                  r.contact_name, r.contact_email, r.follow_up_days, r.notes]);
+        st.free();
+        db.exec('COMMIT');
+      } catch (ex) {
+        db.exec('ROLLBACK');
+        throw ex;
+      }
+    });
+  } catch (ex) {
+    $('#import-error').textContent = 'Import failed, nothing was added: ' + ex.message;
+    return;
+  }
+  $('#import-dialog').close();
+  imp = null;
+  toast(`Imported ${records.length} application${records.length === 1 ? '' : 's'}.`);
+}
+
+async function exportSpreadsheet(bookType) {
+  if (!confirm('The exported file will NOT be encrypted. Anyone who gets it can read your applications. Continue?')) return;
+  const apps = q(`SELECT company AS Company, position AS Position, status AS Status, applied_on AS Applied,
+      last_contact_on AS "Last contact", next_follow_up AS "Next follow-up", follow_up_days AS "Follow-up days",
+      location AS Location, url AS Link, contact_name AS Contact, contact_email AS "Contact email", notes AS Notes
+    FROM v_applications ORDER BY COALESCE(applied_on, created_at) DESC`);
+  const sheets = { Applications: apps };
+  if (bookType !== 'csv') {
+    sheets.Activity = q(`SELECT e.at AS "When (UTC)", a.company AS Company, a.position AS Position,
+        e.kind AS Event, e.detail AS Detail
+      FROM events e JOIN applications a ON a.id = e.application_id ORDER BY e.at DESC, e.id DESC`);
+  }
+  try {
+    downloadBytes(await Sheet.writeSpreadsheet(sheets, bookType), `job-applications-${today()}.${bookType}`);
+  } catch (ex) {
+    toast('Export failed: ' + ex.message);
   }
 }
 

@@ -179,6 +179,11 @@ dialog::backdrop { background: rgb(0 0 0 / .45); }
   .tabs { order: 3; flex-basis: 100%; }
   th:nth-child(4), td:nth-child(4) { display: none; }
 }
+h3 { font-size: .95rem; margin: 1rem 0 .5rem; }
+label.check { display: flex; gap: .5rem; align-items: center; }
+label.check input { width: auto; margin: 0; }
+#import-preview { max-height: 16rem; overflow: auto; }
+#import-preview td, #import-preview th { font-size: .82rem; padding: .35rem .55rem; white-space: nowrap; }
 .events { font-size: .85rem; color: var(--muted); max-height: 9rem; overflow-y: auto; }
 .events ul { margin: .2rem 0 0; padding-left: 1.1rem; }
 

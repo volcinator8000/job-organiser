@@ -1,10 +1,6 @@
-name: Sync & remind
+name: Follow-up reminders
 
-# Runs when the web app pushes a new vault, and every morning for reminders.
 on:
-  push:
-    branches: [main]
-    paths: [data/jobs.vault]
   schedule:
     - cron: "0 7 * * *"   # 07:00 UTC
   workflow_dispatch:
@@ -12,18 +8,12 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: sync
-  cancel-in-progress: false
-
 jobs:
-  sync:
+  remind:
     runs-on: ubuntu-latest
     env:
       TZ: ${{ vars.TZ || 'UTC' }}
       JOBVAULT_PASSWORD: ${{ secrets.JOBVAULT_PASSWORD }}
-      GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-      SHEET_ID: ${{ secrets.SHEET_ID }}
       SMTP_HOST: ${{ secrets.SMTP_HOST }}
       SMTP_PORT: ${{ secrets.SMTP_PORT }}
       SMTP_USER: ${{ secrets.SMTP_USER }}
@@ -37,9 +27,5 @@ jobs:
           cache: pip
           cache-dependency-path: python/requirements.txt
       - run: pip install -r python/requirements.txt
-      # Logs of public repos are public: sync.py only prints counts.
-      - name: Sync to Google Sheets
-        run: python python/sync.py --sheets
-      - name: Email due follow-ups
-        if: github.event_name != 'push'
-        run: python python/sync.py --remind
+      # Logs of public repos are public: remind.py only prints counts.
+      - run: python python/remind.py
